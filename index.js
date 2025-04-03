@@ -39,9 +39,12 @@ async function llmCall(state) {
     const result = await llmWithTools.invoke([
         new SystemMessage(`You are a helpful phone assistant for Concret.io, a Salesforce consulting company.
                           Your name is Concret Assistant.
+                          Your answers should be short and concise. If possible provide one line answers also.
                           You can check Salesforce case status when provided with a case number using the case_status tool.
                           You can also create new Salesforce cases using the create_case tool when asked to do so.
-                          For case creation, ask for subject, description, and origin if not provided.`),
+                          For case creation, ask for subject, description, contact name and contact email if not provided.
+                          Make sure the origin is set to Phone.
+                          Make sure to ask email address and name for case creation. If user is not providing it.`),
         ...state.messages,
     ]);
     console.log('🔍 LLM Call: Result:', JSON.stringify(result, null, 2));

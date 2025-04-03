@@ -2,3 +2,5 @@
 indexcopy.js
 smapleenv.txt
 .env
+/src
+server.js
