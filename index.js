@@ -18,7 +18,6 @@ dotenv.config();
 
 const OrderDetails = [];
 const app = express();
-const GREETING_MESSAGE = 'Hi, I am AI assistant, I am here to help you regarding your order details. Please tell me how can I help you?';   
 
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -117,13 +116,69 @@ app.get('/', (req, res) => {
 });
 
 // -------------- INCOMING-CALL METHOD CALLING -------------------
-app.post('/incoming-call', (req, res) => {
+// app.post('/incoming-call', (req, res) => {
+//     let customerName = 'there';
+//     const GREETING_MESSAGE = `Hi ${customerName}, I am AI assistant, I am here to help you regarding your order details. Please tell me how can I help you?`;   
 
+//     console.log('🔍 POST /incoming-call: Request received');
+
+//     const voiceResponse = new twiml.VoiceResponse();
+//     let messages = req.cookies.messages ? JSON.parse(req.cookies.messages) : null;
+//     console.log('🔍 POST /incoming-call: Existing messages:', messages);
+
+//     if (!messages) {
+//         messages = [
+//             {
+//                 role: "assistant",
+//                 content: GREETING_MESSAGE
+//             }
+//         ];
+//         console.log('🔍 POST /incoming-call: Setting initial messages:', messages);
+//         res.cookie('messages', JSON.stringify(messages));
+//         voiceResponse.say(GREETING_MESSAGE);
+//     }
+
+//     voiceResponse.gather({
+//         input: ['speech'],
+//         speechTimeout: 'auto',
+//         speechModel: 'experimental_conversations',
+//         enhanced: true,
+//         action: '/respond',
+//         method: 'POST'
+//     });
+
+//     console.log('🔍 POST /incoming-call: Sending response');
+//     res.type('text/xml');
+//     res.send(voiceResponse.toString());
+//     const incomingNumber = req.body.From;
+//     console.log(`📞 Incoming call from: ${incomingNumber}`);
+//     OrderDetails = getOrderSummaryStatus(incomingNumber);
+//     console.log(`🔍 Order Summary Status: ${OrderDetails}`);
+// });
+
+// -------------- INCOMING-CALL METHOD CALLING -------------------
+app.post('/incoming-call', async (req, res) => {
     console.log('🔍 POST /incoming-call: Request received');
+
+    const incomingNumber = req.body.From;
+    console.log(`📞 Incoming call from: ${incomingNumber}`);
+
+    // Fetch order details from Salesforce, which includes customer name
+    const orderData = await getOrderSummaryStatus(incomingNumber);
+    console.log(`🔍 Order Summary Status: ${orderData}`);
+
+    let customerName = 'there';
+    if (orderData) {
+        const parsedData = JSON.parse(orderData);
+        if (Array.isArray(parsedData) && parsedData.length > 0 && parsedData[0].Name) {
+            customerName = parsedData[0].Name;
+        }
+    }
+
+    const GREETING_MESSAGE = `Hi ${customerName}, I am your AI assistant. I'm here to help you with your order details. How can I assist you today?`;
 
     const voiceResponse = new twiml.VoiceResponse();
     let messages = req.cookies.messages ? JSON.parse(req.cookies.messages) : null;
-    console.log('🔍 POST /incoming-call: Existing messages:', messages);
 
     if (!messages) {
         messages = [
@@ -132,7 +187,6 @@ app.post('/incoming-call', (req, res) => {
                 content: GREETING_MESSAGE
             }
         ];
-        console.log('🔍 POST /incoming-call: Setting initial messages:', messages);
         res.cookie('messages', JSON.stringify(messages));
         voiceResponse.say(GREETING_MESSAGE);
     }
@@ -149,11 +203,8 @@ app.post('/incoming-call', (req, res) => {
     console.log('🔍 POST /incoming-call: Sending response');
     res.type('text/xml');
     res.send(voiceResponse.toString());
-    const incomingNumber = req.body.From;
-    console.log(`📞 Incoming call from: ${incomingNumber}`);
-    OrderDetails = getOrderSummaryStatus(incomingNumber);
-    console.log(`🔍 Order Summary Status: ${OrderDetails}`);
 });
+
 
 // -------------- RESPOND METHOD CALLING -------------------
 app.post('/respond', async (req, res) => {
