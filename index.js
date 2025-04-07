@@ -9,13 +9,16 @@ const { ChatOpenAI } = require('@langchain/openai');
 const { MessagesAnnotation, StateGraph } = require('@langchain/langgraph');
 const { SystemMessage, ToolMessage } = require('@langchain/core/messages');
 const { CaseStatusTool } = require('./lib/getCaseDetails');
-const { CreateCaseTool } = require('./lib/createCase'); // Import the new tool
+const { CreateCaseTool } = require('./lib/createCase');
+const {OrderSummaryStatusTool} = require('./lib/getOrderDetails');
+const {GetOrderSummaryStatus_Ctrl} = require('./lib/getCustomerOrderDetails');
+const { getOrderSummaryStatus } = require('./lib/apexService');
 
 dotenv.config();
 
+const OrderDetails = [];
 const app = express();
-const openAI = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const GREETING_MESSAGE = 'Hi, My self Rajnish. I am AI assistant, how can i help you?';
+const GREETING_MESSAGE = 'Hi, I am AI assistant, I am here to help you regarding your order details. Please tell me how can I help you?';   
 
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -28,7 +31,7 @@ const llm = new ChatOpenAI({
 console.log('🔍 Initializing application...');
 
 // Setup tools and bind to LLM
-const tools = [new CaseStatusTool(), new CreateCaseTool()];
+const tools = [new CaseStatusTool(), new CreateCaseTool(), new GetOrderSummaryStatus_Ctrl()];
 const toolsByName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 const llmWithTools = llm.bindTools(tools);
 console.log('🔍 Tools initialized:', Object.keys(toolsByName));
@@ -38,13 +41,9 @@ async function llmCall(state) {
     console.log('🔍 LLM Call: State messages:', JSON.stringify(state.messages, null, 2));
     const result = await llmWithTools.invoke([
         new SystemMessage(`You are a helpful phone assistant for Concret.io, a Salesforce consulting company.
-                          Your name is Concret Assistant.
                           Your answers should be short and concise. If possible provide one line answers also.
-                          You can check Salesforce case status when provided with a case number using the case_status tool.
-                          You can also create new Salesforce cases using the create_case tool when asked to do so.
-                          For case creation, ask for subject, description, contact name and contact email if not provided.
-                          Make sure the origin is set to Phone.
-                          Make sure to ask email address and name for case creation. If user is not providing it.`),
+                          You are here to help user with their order details.
+                          `),
         ...state.messages,
     ]);
     console.log('🔍 LLM Call: Result:', JSON.stringify(result, null, 2));
@@ -117,8 +116,11 @@ app.get('/', (req, res) => {
     res.send('<h1>Welcome to Test Page</h1>');
 });
 
+// -------------- INCOMING-CALL METHOD CALLING -------------------
 app.post('/incoming-call', (req, res) => {
+
     console.log('🔍 POST /incoming-call: Request received');
+
     const voiceResponse = new twiml.VoiceResponse();
     let messages = req.cookies.messages ? JSON.parse(req.cookies.messages) : null;
     console.log('🔍 POST /incoming-call: Existing messages:', messages);
@@ -147,8 +149,13 @@ app.post('/incoming-call', (req, res) => {
     console.log('🔍 POST /incoming-call: Sending response');
     res.type('text/xml');
     res.send(voiceResponse.toString());
+    const incomingNumber = req.body.From;
+    console.log(`📞 Incoming call from: ${incomingNumber}`);
+    OrderDetails = getOrderSummaryStatus(incomingNumber);
+    console.log(`🔍 Order Summary Status: ${OrderDetails}`);
 });
 
+// -------------- RESPOND METHOD CALLING -------------------
 app.post('/respond', async (req, res) => {
     console.log('🔍 POST /respond: Request received with body:', req.body);
     const voiceInput = req.body.SpeechResult;
