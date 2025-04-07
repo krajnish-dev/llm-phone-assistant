@@ -1,6 +1,8 @@
 // index.js
 const express = require('express');
 const OpenAI = require('openai');
+const path = require('path');
+const fs = require('fs');
 const { twiml } = require('twilio');
 const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
@@ -16,7 +18,7 @@ const { getOrderSummaryStatus } = require('./lib/apexService');
 
 dotenv.config();
 
-const OrderDetails = [];
+// const OrderDetails = [];
 const app = express();
 
 app.use(express.urlencoded({ extended: true }));
@@ -116,54 +118,12 @@ app.get('/', (req, res) => {
 });
 
 // -------------- INCOMING-CALL METHOD CALLING -------------------
-// app.post('/incoming-call', (req, res) => {
-//     let customerName = 'there';
-//     const GREETING_MESSAGE = `Hi ${customerName}, I am AI assistant, I am here to help you regarding your order details. Please tell me how can I help you?`;   
-
-//     console.log('🔍 POST /incoming-call: Request received');
-
-//     const voiceResponse = new twiml.VoiceResponse();
-//     let messages = req.cookies.messages ? JSON.parse(req.cookies.messages) : null;
-//     console.log('🔍 POST /incoming-call: Existing messages:', messages);
-
-//     if (!messages) {
-//         messages = [
-//             {
-//                 role: "assistant",
-//                 content: GREETING_MESSAGE
-//             }
-//         ];
-//         console.log('🔍 POST /incoming-call: Setting initial messages:', messages);
-//         res.cookie('messages', JSON.stringify(messages));
-//         voiceResponse.say(GREETING_MESSAGE);
-//     }
-
-//     voiceResponse.gather({
-//         input: ['speech'],
-//         speechTimeout: 'auto',
-//         speechModel: 'experimental_conversations',
-//         enhanced: true,
-//         action: '/respond',
-//         method: 'POST'
-//     });
-
-//     console.log('🔍 POST /incoming-call: Sending response');
-//     res.type('text/xml');
-//     res.send(voiceResponse.toString());
-//     const incomingNumber = req.body.From;
-//     console.log(`📞 Incoming call from: ${incomingNumber}`);
-//     OrderDetails = getOrderSummaryStatus(incomingNumber);
-//     console.log(`🔍 Order Summary Status: ${OrderDetails}`);
-// });
-
-// -------------- INCOMING-CALL METHOD CALLING -------------------
 app.post('/incoming-call', async (req, res) => {
     console.log('🔍 POST /incoming-call: Request received');
 
     const incomingNumber = req.body.From;
     console.log(`📞 Incoming call from: ${incomingNumber}`);
 
-    // Fetch order details from Salesforce, which includes customer name
     const orderData = await getOrderSummaryStatus(incomingNumber);
     console.log(`🔍 Order Summary Status: ${orderData}`);
 
@@ -200,10 +160,74 @@ app.post('/incoming-call', async (req, res) => {
         method: 'POST'
     });
 
+    // 🔽 Write order data to a text file
+    try {
+         const outputDir = path.join(__dirname, 'tempLogs');
+        if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, { recursive: true });
+        }
+        const outputPath = path.join(outputDir, 'tempOrderDetails.txt');
+
+        const orderDetails = JSON.parse(orderData);
+        // Validate orderDetails
+        if (orderDetails==null || orderDetails.length === 0) {
+            const errorText = "No order details received from the server.";
+            fs.writeFileSync(outputPath, errorText);
+            console.log(`✅ Empty order details written to ${outputPath}: ${errorText}`);
+            res.type('text/xml');
+            return res.send(voiceResponse.toString());
+        }
+
+
+        // Format the order details as a string
+        let formattedText = `Order Summary for ${orderDetails[0].Name || 'Unknown Customer'}\n`;
+        formattedText += `Contact ID: ${orderDetails[0].Id || 'N/A'}\n`;
+        formattedText += `Total Orders: ${orderDetails[0].UserOrders__r?.totalSize || 0}\n\n`;
+
+        const orders = orderDetails[0]?.UserOrders__r?.records;
+        if (orders && Array.isArray(orders) && orders.length > 0) {
+            formattedText += "Order Details:\n";
+            orders.forEach((order, index) => {
+                formattedText += `Order ${index + 1}:\n`;
+                formattedText += `  Order Number: ${order.Name || 'N/A'}\n`;
+                formattedText += `  Product: ${order.Product_VB__r?.Name || 'N/A'}\n`;
+                formattedText += `  Quantity: ${order.Product_Quantity__c ?? 0}\n`;
+                formattedText += `  Price per Unit: $${(order.Product_VB__r?.Price__c ?? 0).toFixed(2)}\n`;
+                formattedText += `  Total Amount: $${(order.Total_Amount__c ?? 0).toFixed(2)}\n`;
+                formattedText += `  Order Date: ${order.Order_Date__c ? new Date(order.Order_Date__c).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : 'N/A'}\n`;
+                formattedText += `  Status: ${order.Order_Status__c || 'N/A'}\n`;
+                if (order.Shipping_Address__City__s) {
+                    formattedText += `  Shipping City: ${order.Shipping_Address__City__s}\n`;
+                }
+                formattedText += "\n";
+            });
+        } else {
+            formattedText += "No orders found for this customer.\n";
+        }
+
+        // Write to file
+        fs.writeFileSync(outputPath, formattedText);
+        console.log(`✅ Order details written to ${outputPath}`);
+        console.log(`🔍 Written content preview:`, formattedText.slice(0, 200) + (formattedText.length > 200 ? '...' : ''));
+
+    } 
+    catch (err) {
+        console.error('❌ Error fetching or writing order details:', err);
+        const outputDir = path.join(__dirname, 'tempLogs');
+        if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, { recursive: true });
+        }
+        const outputPath = path.join(outputDir, 'tempOrderDetails.txt');
+        const errorText = `Error: Unable to fetch or process order details - ${err.message}`;
+        fs.writeFileSync(outputPath, errorText);
+        console.log(`✅ Error written to ${outputPath}: ${errorText}`);
+    }    
+
     console.log('🔍 POST /incoming-call: Sending response');
     res.type('text/xml');
     res.send(voiceResponse.toString());
 });
+
 
 
 // -------------- RESPOND METHOD CALLING -------------------
