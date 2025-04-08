@@ -1,4 +1,3 @@
-// index.js
 const express = require("express");
 const OpenAI = require("openai");
 const path = require("path");
@@ -12,9 +11,8 @@ const { MessagesAnnotation, StateGraph } = require("@langchain/langgraph");
 const { SystemMessage, ToolMessage } = require("@langchain/core/messages");
 const { CaseStatusTool } = require("./lib/getCaseDetails");
 const { CreateCaseTool } = require("./lib/createCase");
-const { OrderSummaryStatusTool } = require("./lib/getOrderDetails");
-const { GetOrderSummaryStatus_Ctrl } = require("./lib/getCustomerOrderDetails");
 const { getOrderSummaryStatus } = require("./lib/apexService");
+const { getSystemPrompt } = require("./prompts");
 
 dotenv.config();
 
@@ -34,25 +32,18 @@ console.log("🔍 Initializing application...");
 const tools = [
   new CaseStatusTool(),
   new CreateCaseTool(),
-  new GetOrderSummaryStatus_Ctrl(),
 ];
 const toolsByName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 const llmWithTools = llm.bindTools(tools);
 console.log("🔍 Tools initialized:", Object.keys(toolsByName));
 
-// LangGraph setup (unchanged)
+// LangGraph setup
 async function llmCall(state) {
-  console.log(
-    "🔍 LLM Call: State messages:",
-    JSON.stringify(state.messages, null, 2)
-  );
+  console.log("🔍 LLM Call: State messages:", JSON.stringify(state.messages, null, 2));
+  const orderDetailsArray = state.orderDetailsArray || [];
+  const systemPrompt = getSystemPrompt(orderDetailsArray);
   const result = await llmWithTools.invoke([
-    new SystemMessage(`You are a phone assistant for a customer voice service company. Your role is to help users with queries related to their orders
-                        Keep your answers short, friendly, and concise. Prefer one-line responses when possible.
-                        Provide order information by reading from tempOrderDetails.txt. Do not make API calls.
-                        When sharing order details, mention the user's name only in the first response. Use "you" or "your" in following messages.
-                        Avoid repeating the phrase "order summary" unless the user explicitly asks for it.
-                        Maintain a polite and helpful tone throughout the conversation.`),
+    new SystemMessage(systemPrompt),
     ...state.messages,
   ]);
   console.log("🔍 LLM Call: Result:", JSON.stringify(result, null, 2));
@@ -60,26 +51,15 @@ async function llmCall(state) {
 }
 
 async function toolNode(state) {
-  console.log(
-    "🔍 Tool Node: Processing state:",
-    JSON.stringify(state.messages, null, 2)
-  );
+  console.log("🔍 Tool Node: Processing state:", JSON.stringify(state.messages, null, 2));
   const results = [];
   const lastMessage = state.messages[state.messages.length - 1];
-  console.log(
-    "🔍 Tool Node: Last message:",
-    JSON.stringify(lastMessage, null, 2)
-  );
+  console.log("🔍 Tool Node: Last message:", JSON.stringify(lastMessage, null, 2));
 
   if (lastMessage?.tool_calls?.length) {
-    console.log(
-      `🔍 Tool Node: Found ${lastMessage.tool_calls.length} tool calls`
-    );
+    console.log(`🔍 Tool Node: Found ${lastMessage.tool_calls.length} tool calls`);
     for (const toolCall of lastMessage.tool_calls) {
-      console.log(
-        "🔍 Tool Node: Processing tool call:",
-        JSON.stringify(toolCall, null, 2)
-      );
+      console.log("🔍 Tool Node: Processing tool call:", JSON.stringify(toolCall, null, 2));
       const tool = toolsByName[toolCall.name];
       if (tool) {
         try {
@@ -112,10 +92,7 @@ async function toolNode(state) {
 
 function shouldContinue(state) {
   const lastMessage = state.messages[state.messages.length - 1];
-  console.log(
-    "🔍 Should Continue: Checking last message:",
-    JSON.stringify(lastMessage, null, 2)
-  );
+  console.log("🔍 Should Continue: Checking last message:", JSON.stringify(lastMessage, null, 2));
   const nextStep = lastMessage?.tool_calls?.length ? "tools" : "__end__";
   console.log(`🔍 Should Continue: Next step: ${nextStep}`);
   return nextStep;
@@ -142,21 +119,55 @@ app.get("/", (req, res) => {
 // -------------- INCOMING-CALL METHOD CALLING -------------------
 app.post("/incoming-call", async (req, res) => {
   console.log("🔍 POST /incoming-call: Request received");
-
   const incomingNumber = req.body.From;
   console.log(`📞 Incoming call from: ${incomingNumber}`);
 
-  const orderData = await getOrderSummaryStatus(incomingNumber);
-  console.log(`🔍 Order Summary Status: ${orderData}`);
+  // Check if order data is already in cookies
+  let orderData = req.cookies.orderData ? JSON.parse(req.cookies.orderData) : null;
+  let orderDetailsArray = [];
+
+  if (!orderData) {
+    // Fetch order data only if it’s not already stored
+    orderData = await getOrderSummaryStatus(incomingNumber);
+    console.log(`🔍 Order Summary Status: ${orderData}`);
+    res.cookie("orderData", JSON.stringify(orderData)); // Store in cookies
+
+    // Parse order data into an array of objects
+    const parsedData = JSON.parse(orderData);
+    if (parsedData && Array.isArray(parsedData) && parsedData.length > 0) {
+      const orders = parsedData[0]?.UserOrders__r?.records || [];
+      orderDetailsArray = orders.map((order, index) => ({
+        orderNumber: index + 1,
+        product: order.Product_VB__r?.Name || "N/A",
+        quantity: order.Product_Quantity__c ?? 0,
+        pricePerUnit: order.Product_VB__r?.Price__c ?? 0,
+        totalAmount: order.Total_Amount__c ?? 0,
+        orderDate: order.Order_Date__c
+          ? new Date(order.Order_Date__c).toLocaleDateString("en-US", {
+              year: "numeric",
+              month: "short",
+              day: "numeric",
+            })
+          : "N/A",
+        status: order.Order_Status__c || "N/A",
+        shippingCity: order.Shipping_Address__City__s || null,
+      }));
+    } else {
+      orderDetailsArray = []; // Empty array if no orders
+    }
+    res.cookie("orderDetailsArray", JSON.stringify(orderDetailsArray)); // Store array in cookies
+    console.log("🔍 Order Details Array:", JSON.stringify(orderDetailsArray, null, 2));
+  } else {
+    // Use existing orderDetailsArray from cookies
+    orderDetailsArray = req.cookies.orderDetailsArray
+      ? JSON.parse(req.cookies.orderDetailsArray)
+      : [];
+  }
 
   let customerName = "there";
   if (orderData) {
     const parsedData = JSON.parse(orderData);
-    if (
-      Array.isArray(parsedData) &&
-      parsedData.length > 0 &&
-      parsedData[0].Name
-    ) {
+    if (Array.isArray(parsedData) && parsedData.length > 0 && parsedData[0].Name) {
       customerName = parsedData[0].Name;
     }
   }
@@ -167,101 +178,19 @@ app.post("/incoming-call", async (req, res) => {
   let messages = req.cookies.messages ? JSON.parse(req.cookies.messages) : null;
 
   if (!messages) {
-    messages = [
-      {
-        role: "assistant",
-        content: GREETING_MESSAGE,
-      },
-    ];
+    messages = [{ role: "assistant", content: GREETING_MESSAGE }];
     res.cookie("messages", JSON.stringify(messages));
-    voiceResponse.say(GREETING_MESSAGE);
+    voiceResponse.say({ voice: "Polly.Joanna", language: "en-US" }, GREETING_MESSAGE);
   }
 
   voiceResponse.gather({
     input: ["speech"],
     speechTimeout: "auto",
-    speechModel: "experimental_conversations",
+    speechModel: "phone_call",
     enhanced: true,
     action: "/respond",
     method: "POST",
   });
-
-  // Write order data to a text file
-  try {
-    const outputDir = path.join(__dirname, "tempLogs");
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-    const outputPath = path.join(outputDir, "tempOrderDetails.txt");
-
-    const orderDetails = JSON.parse(orderData);
-    // Validate orderDetails
-    if (orderDetails == null || orderDetails.length === 0) {
-      const errorText = "No order details received from the server.";
-      fs.writeFileSync(outputPath, errorText);
-      console.log(
-        `✅ Empty order details written to ${outputPath}: ${errorText}`
-      );
-    } else {
-      // Format the order details as a string
-      let formattedText = `Order Summary for ${
-        orderDetails[0].Name || "Unknown Customer"
-      }\n`;
-      formattedText += `Total Orders: ${
-        orderDetails[0].UserOrders__r?.totalSize || 0
-      }\n\n`;
-
-      const orders = orderDetails[0]?.UserOrders__r?.records;
-      if (orders && Array.isArray(orders) && orders.length > 0) {
-        formattedText += "Order Details:\n";
-        orders.forEach((order, index) => {
-          formattedText += `Order ${index + 1}:\n`;
-          // formattedText += `  Order Number: ${order.Name || 'N/A'}\n`;
-          formattedText += `  Product: ${order.Product_VB__r?.Name || "N/A"}\n`;
-          formattedText += `  Quantity: ${order.Product_Quantity__c ?? 0}\n`;
-          formattedText += `  Price per Unit: $${(
-            order.Product_VB__r?.Price__c ?? 0
-          ).toFixed(2)}\n`;
-          formattedText += `  Total Amount: $${(
-            order.Total_Amount__c ?? 0
-          ).toFixed(2)}\n`;
-          formattedText += `  Order Date: ${
-            order.Order_Date__c
-              ? new Date(order.Order_Date__c).toLocaleDateString("en-US", {
-                  year: "numeric",
-                  month: "short",
-                  day: "numeric",
-                })
-              : "N/A"
-          }\n`;
-          formattedText += `  Status: ${order.Order_Status__c || "N/A"}\n`;
-          if (order.Shipping_Address__City__s) {
-            formattedText += `  Shipping City: ${order.Shipping_Address__City__s}\n`;
-          }
-          formattedText += "\n";
-        });
-      } else {
-        formattedText += "No orders found for this customer.\n";
-      }
-
-      fs.writeFileSync(outputPath, formattedText);
-      console.log(`✅ Order details written to ${outputPath}`);
-      console.log(
-        `🔍 Written content preview:`,
-        formattedText.slice(0, 200) + (formattedText.length > 200 ? "..." : "")
-      );
-    }
-  } catch (err) {
-    console.error("❌ Error fetching or writing order details:", err);
-    const outputDir = path.join(__dirname, "tempLogs");
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-    const outputPath = path.join(outputDir, "tempOrderDetails.txt");
-    const errorText = `Error: Unable to fetch or process order details - ${err.message}`;
-    fs.writeFileSync(outputPath, errorText);
-    console.log(`✅ Error written to ${outputPath}: ${errorText}`);
-  }
 
   console.log("🔍 POST /incoming-call: Sending response");
   res.type("text/xml");
@@ -271,103 +200,53 @@ app.post("/incoming-call", async (req, res) => {
 // -------------- RESPOND METHOD CALLING -------------------
 app.post("/respond", async (req, res) => {
   console.log("🔍 POST /respond: Request received with body:", req.body);
-  const voiceInput = req.body.SpeechResult.toLowerCase(); // Convert to lowercase for easier matching
+  const voiceInput = req.body.SpeechResult.toLowerCase();
   console.log("🔍 POST /respond: Voice input:", voiceInput);
   let messages = req.cookies.messages ? JSON.parse(req.cookies.messages) : [];
-  console.log("🔍 POST /respond: Current messages:", messages);
+  const orderDetailsArray = req.cookies.orderDetailsArray
+    ? JSON.parse(req.cookies.orderDetailsArray)
+    : [];
 
   messages.push({ role: "user", content: voiceInput });
-  console.log("🔍 POST /respond: Updated messages with user input:", messages);
 
   try {
-    const outputPath = path.join(__dirname, "tempLogs", "tempOrderDetails.txt");
     let assistantResponse = "I'm sorry, I couldn't process your request.";
 
-    // Check if the request is about orders
-    if (
-      voiceInput.includes("order") ||
-      voiceInput.includes("recent") ||
-      voiceInput.includes("status")
-    ) {
-      if (fs.existsSync(outputPath)) {
-        const fileContent = fs.readFileSync(outputPath, "utf8");
-        console.log("🔍 POST /respond: File content:", fileContent);
-
-        // Simple parsing of the file content
-        if (
-          fileContent.includes("No order details received") ||
-          fileContent.includes("No orders found")
-        ) {
-          assistantResponse =
-            "I don't have any order details for you at the moment.";
-        } else if (voiceInput.includes("recent")) {
-          // Extract recent orders (assuming most recent is the last one or sorted by date)
-          const orderLines = fileContent.split("\n");
-          let recentOrder = "";
-          let foundOrder = false;
-          for (let i = orderLines.length - 1; i >= 0; i--) {
-            if (orderLines[i].startsWith("Order ")) {
-              recentOrder = orderLines.slice(i, i + 8).join("\n"); // Adjust based on order block size
-              foundOrder = true;
-              break;
-            }
-          }
-          if (foundOrder) {
-            assistantResponse = `Your most recent order is:\n${recentOrder}`;
-          } else {
-            assistantResponse = "I couldn't find any recent orders.";
-          }
-        } else if (voiceInput.includes("status")) {
-          // Provide status of all orders
-          const orderLines = fileContent.split("\n");
-          let statusResponse = "Here are your order statuses:\n";
-          let hasOrders = false;
-          for (let i = 0; i < orderLines.length; i++) {
-            if (orderLines[i].startsWith("Order ")) {
-              const statusLine = orderLines[i + 6]; // Assuming "Status" is 6 lines after "Order X"
-              statusResponse += `${orderLines[i]} - ${statusLine}\n`;
-              hasOrders = true;
-            }
-          }
-          assistantResponse = hasOrders
-            ? statusResponse
-            : "No order statuses available.";
-        } else {
-          // General order list
-          const orderLines = fileContent.split("\n");
-          let orderList = "Here are your orders:\n";
-          let hasOrders = false;
-          for (let i = 0; i < orderLines.length; i++) {
-            if (orderLines[i].startsWith("Order ")) {
-              orderList += `${orderLines[i]}: ${orderLines[i + 1]} - ${
-                orderLines[i + 2]
-              }\n`; // Order Number and Product
-              hasOrders = true;
-              i += 7; // Skip to next order block
-            }
-          }
-          assistantResponse = hasOrders
-            ? orderList
-            : "No orders found in the records.";
-        }
+    if (voiceInput.includes("order") || voiceInput.includes("product")) {
+      if (orderDetailsArray.length === 0) {
+        assistantResponse = "I don't have any order details for you at the moment.";
+      } else if (voiceInput.includes("recent")) {
+        const recentOrder = orderDetailsArray[orderDetailsArray.length - 1];
+        assistantResponse = `Your most recent order is: Product: ${recentOrder.product}, Quantity: ${recentOrder.quantity}, Status: ${recentOrder.status}, Ordered on: ${recentOrder.orderDate}.`;
+      } else if (voiceInput.includes("status")) {
+        let statusResponse = "Your order statuses:\n";
+        orderDetailsArray.forEach((order) => {
+          statusResponse += `Order ${order.orderNumber} - Status: ${order.status}\n`;
+        });
+        assistantResponse = statusResponse;
       } else {
-        assistantResponse =
-          "I couldn't find the order details file. Please try again later.";
+        let productList = "Here are the products you ordered:\n";
+        orderDetailsArray.forEach((order) => {
+          productList += `- ${order.product}\n`;
+        });
+        assistantResponse = productList;
       }
     } else {
-      // Use LLM for non-order-related queries
+      // Pass orderDetailsArray to LLM for non-order-specific queries
+      messages.push({
+        role: "system",
+        content: `Order details available: ${JSON.stringify(orderDetailsArray)}`,
+      });
       const result = await agent.invoke({ messages });
       assistantResponse = result.messages[result.messages.length - 1].content;
     }
 
     messages.push({ role: "assistant", content: assistantResponse });
+    res.cookie("messages", JSON.stringify(messages));
     console.log("🔍 POST /respond: Final messages:", messages);
 
-    res.cookie("messages", JSON.stringify(messages));
-    console.log("🔍 POST /respond: Cookie set");
-
     const voiceResponse = new twiml.VoiceResponse();
-    voiceResponse.say(assistantResponse);
+    voiceResponse.say({ voice: "Polly.Joanna", language: "en-US" }, assistantResponse);
     voiceResponse.redirect({ method: "POST" }, "/incoming-call");
 
     console.log("🔍 POST /respond: Sending response");
@@ -396,8 +275,6 @@ app.listen(port, async () => {
       console.error("🔍 Error establishing ngrok tunnel:", err);
     }
   } else {
-    console.log(
-      "🔍 Ngrok is not enabled. Set NGROK_AUTH_TOKEN in .env to enable it."
-    );
+    console.log("🔍 Ngrok is not enabled. Set NGROK_AUTH_TOKEN in .env to enable it.");
   }
 });
