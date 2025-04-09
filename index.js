@@ -12,6 +12,7 @@ const { SystemMessage, ToolMessage } = require("@langchain/core/messages");
 const { CaseStatusTool } = require("./lib/getCaseDetails");
 const { CreateCaseTool } = require("./lib/createCase");
 const { getOrderSummaryStatus } = require("./lib/apexService");
+const { UpdateDeliveryDateTool } = require("./lib/updateDeliveyDate");
 const { getSystemPrompt } = require("./prompts");
 
 dotenv.config();
@@ -32,6 +33,7 @@ console.log("🔍 Initializing application...");
 const tools = [
   new CaseStatusTool(),
   new CreateCaseTool(),
+  new UpdateDeliveryDateTool(),
 ];
 const toolsByName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 const llmWithTools = llm.bindTools(tools);
