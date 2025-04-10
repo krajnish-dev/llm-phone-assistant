@@ -2,7 +2,6 @@ const express = require("express");
 const { twiml } = require("twilio");
 const session = require("express-session");
 const dotenv = require("dotenv");
-const ngrok = require("@ngrok/ngrok");
 const { ChatOpenAI } = require("@langchain/openai");
 const { MessagesAnnotation, StateGraph } = require("@langchain/langgraph");
 const { SystemMessage, ToolMessage } = require("@langchain/core/messages");
@@ -21,7 +20,7 @@ app.use(express.urlencoded({ extended: true }));
 // Initialize session middleware
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || "your-secret-key", 
+    secret: process.env.SESSION_SECRET || "your-secret-key",
     resave: false,
     saveUninitialized: false,
     cookie: { maxAge: 24 * 60 * 60 * 1000 },
@@ -130,7 +129,6 @@ app.post("/incoming-call", async (req, res) => {
   const incomingNumber = req.body.From;
   console.log(`📞 Incoming call from: ${incomingNumber}`);
 
-  // Use session instead of cookies
   let orderData = req.session.orderData || null;
   let orderDetailsArray = req.session.orderDetailsArray || [];
 
@@ -178,7 +176,7 @@ app.post("/incoming-call", async (req, res) => {
   const voiceResponse = new twiml.VoiceResponse();
   let messages = req.session.messages || [];
 
-  if (messages.length === 0) { // Only greet on first interaction
+  if (messages.length === 0) {
     messages.push({ role: "assistant", content: GREETING_MESSAGE });
     voiceResponse.say({ voice: "Polly.Joanna", language: "en-US" }, GREETING_MESSAGE);
   }
@@ -186,7 +184,7 @@ app.post("/incoming-call", async (req, res) => {
 
   voiceResponse.gather({
     input: ["speech"],
-    speechTimeout: 5,
+    speechTimeout: "auto",
     speechModel: "phone_call",
     enhanced: true,
     action: "/respond",
@@ -254,7 +252,7 @@ app.post("/respond", async (req, res) => {
 
   voiceResponse.gather({
     input: ["speech"],
-    speechTimeout: "auto",
+    speechTimeout: "auto", 
     speechModel: "phone_call",
     enhanced: true,
     action: "/respond",
@@ -264,25 +262,4 @@ app.post("/respond", async (req, res) => {
   console.log("🔍 POST /respond: Sending response");
   res.type("text/xml");
   res.send(voiceResponse.toString());
-});
-
-const port = process.env.PORT || 3000;
-
-app.listen(port, async () => {
-  console.log(`🔍 Server is running on: http://localhost:${port}`);
-
-  if (process.env.NGROK_AUTH_TOKEN) {
-    const NGROK_AUTH_TOKEN = process.env.NGROK_AUTH_TOKEN;
-    try {
-      const listener = await ngrok.forward({
-        addr: port,
-        authtoken: NGROK_AUTH_TOKEN,
-      });
-      console.log(`🔍 Ngrok tunnel established at: ${listener.url()}`);
-    } catch (err) {
-      console.error("🔍 Error establishing ngrok tunnel:", err);
-    }
-  } else {
-    console.log("🔍 Ngrok is not enabled. Set NGROK_AUTH_TOKEN in .env to enable it.");
-  }
 });
