@@ -1,9 +1,6 @@
 const express = require("express");
-const OpenAI = require("openai");
-const path = require("path");
-const fs = require("fs");
 const { twiml } = require("twilio");
-const cookieParser = require("cookie-parser");
+const session = require("express-session");
 const dotenv = require("dotenv");
 const ngrok = require("@ngrok/ngrok");
 const { ChatOpenAI } = require("@langchain/openai");
@@ -20,7 +17,16 @@ dotenv.config();
 const app = express();
 
 app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser());
+
+// Initialize session middleware
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "your-secret-key", 
+    resave: false,
+    saveUninitialized: false,
+    cookie: { maxAge: 24 * 60 * 60 * 1000 },
+  })
+);
 
 // Initialize OpenAI LLM
 const llm = new ChatOpenAI({
@@ -124,17 +130,15 @@ app.post("/incoming-call", async (req, res) => {
   const incomingNumber = req.body.From;
   console.log(`📞 Incoming call from: ${incomingNumber}`);
 
-  // Check if order data is already in cookies
-  let orderData = req.cookies.orderData ? JSON.parse(req.cookies.orderData) : null;
-  let orderDetailsArray = [];
+  // Use session instead of cookies
+  let orderData = req.session.orderData || null;
+  let orderDetailsArray = req.session.orderDetailsArray || [];
 
   if (!orderData) {
-    // Fetch order data only if it’s not already stored
     orderData = await getOrderSummaryStatus(incomingNumber);
     console.log(`🔍 Order Summary Status: ${orderData}`);
-    res.cookie("orderData", JSON.stringify(orderData)); // Store in cookies
+    req.session.orderData = orderData;
 
-    // Parse order data into an array of objects
     const parsedData = JSON.parse(orderData);
     if (parsedData && Array.isArray(parsedData) && parsedData.length > 0) {
       const orders = parsedData[0]?.UserOrders__r?.records || [];
@@ -155,15 +159,10 @@ app.post("/incoming-call", async (req, res) => {
         shippingCity: order.Shipping_Address__City__s || null,
       }));
     } else {
-      orderDetailsArray = []; // Empty array if no orders
+      orderDetailsArray = [];
     }
-    res.cookie("orderDetailsArray", JSON.stringify(orderDetailsArray)); // Store array in cookies
+    req.session.orderDetailsArray = orderDetailsArray;
     console.log("🔍 Order Details Array:", JSON.stringify(orderDetailsArray, null, 2));
-  } else {
-    // Use existing orderDetailsArray from cookies
-    orderDetailsArray = req.cookies.orderDetailsArray
-      ? JSON.parse(req.cookies.orderDetailsArray)
-      : [];
   }
 
   let customerName = "there";
@@ -177,17 +176,17 @@ app.post("/incoming-call", async (req, res) => {
   const GREETING_MESSAGE = `Hi ${customerName}, I am your AI assistant. I'm here to help you with your order details. How can I assist you today?`;
 
   const voiceResponse = new twiml.VoiceResponse();
-  let messages = req.cookies.messages ? JSON.parse(req.cookies.messages) : null;
+  let messages = req.session.messages || [];
 
-  if (!messages) {
-    messages = [{ role: "assistant", content: GREETING_MESSAGE }];
-    res.cookie("messages", JSON.stringify(messages));
+  if (messages.length === 0) { // Only greet on first interaction
+    messages.push({ role: "assistant", content: GREETING_MESSAGE });
     voiceResponse.say({ voice: "Polly.Joanna", language: "en-US" }, GREETING_MESSAGE);
   }
+  req.session.messages = messages;
 
   voiceResponse.gather({
     input: ["speech"],
-    speechTimeout: "auto",
+    speechTimeout: 5,
     speechModel: "phone_call",
     enhanced: true,
     action: "/respond",
@@ -204,13 +203,12 @@ app.post("/respond", async (req, res) => {
   console.log("🔍 POST /respond: Request received with body:", req.body);
   const voiceInput = req.body.SpeechResult.toLowerCase();
   console.log("🔍 POST /respond: Voice input:", voiceInput);
-  let messages = req.cookies.messages ? JSON.parse(req.cookies.messages) : [];
-  const orderDetailsArray = req.cookies.orderDetailsArray
-    ? JSON.parse(req.cookies.orderDetailsArray)
-    : [];
+  let messages = req.session.messages || [];
+  const orderDetailsArray = req.session.orderDetailsArray || [];
 
   messages.push({ role: "user", content: voiceInput });
 
+  const voiceResponse = new twiml.VoiceResponse();
   try {
     let assistantResponse = "I'm sorry, I couldn't process your request.";
 
@@ -219,7 +217,7 @@ app.post("/respond", async (req, res) => {
         assistantResponse = "I don't have any order details for you at the moment.";
       } else if (voiceInput.includes("recent")) {
         const recentOrder = orderDetailsArray[orderDetailsArray.length - 1];
-        assistantResponse = `Your most recent order is: Product: ${recentOrder.product}, Quantity: ${recentOrder.quantity}, Status: ${recentOrder.status}, Ordered on: ${recentOrder.orderDate}.`;
+        assistantResponse = `Your most recent order is: ${recentOrder.product}, Quantity: ${recentOrder.quantity}, Status: ${recentOrder.status}, Ordered on: ${recentOrder.orderDate}.`;
       } else if (voiceInput.includes("status")) {
         let statusResponse = "Your order statuses:\n";
         orderDetailsArray.forEach((order) => {
@@ -234,7 +232,6 @@ app.post("/respond", async (req, res) => {
         assistantResponse = productList;
       }
     } else {
-      // Pass orderDetailsArray to LLM for non-order-specific queries
       messages.push({
         role: "system",
         content: `Order details available: ${JSON.stringify(orderDetailsArray)}`,
@@ -244,20 +241,29 @@ app.post("/respond", async (req, res) => {
     }
 
     messages.push({ role: "assistant", content: assistantResponse });
-    res.cookie("messages", JSON.stringify(messages));
+    if (messages.length > 10) messages = messages.slice(-10);
+    req.session.messages = messages;
     console.log("🔍 POST /respond: Final messages:", messages);
 
-    const voiceResponse = new twiml.VoiceResponse();
     voiceResponse.say({ voice: "Polly.Joanna", language: "en-US" }, assistantResponse);
-    voiceResponse.redirect({ method: "POST" }, "/incoming-call");
-
-    console.log("🔍 POST /respond: Sending response");
-    res.type("text/xml");
-    res.send(voiceResponse.toString());
   } catch (error) {
-    console.error("🔍 POST /respond: Error processing request:", error);
-    res.status(500).send("Error processing request");
+    console.error("🔍 POST /respond: Error processing request:", error.stack);
+    assistantResponse = "Sorry, I’m having trouble processing your request. Please try again.";
+    voiceResponse.say({ voice: "Polly.Joanna", language: "en-US" }, assistantResponse);
   }
+
+  voiceResponse.gather({
+    input: ["speech"],
+    speechTimeout: "auto",
+    speechModel: "phone_call",
+    enhanced: true,
+    action: "/respond",
+    method: "POST",
+  });
+
+  console.log("🔍 POST /respond: Sending response");
+  res.type("text/xml");
+  res.send(voiceResponse.toString());
 });
 
 const port = process.env.PORT || 3000;
