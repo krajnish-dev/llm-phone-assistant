@@ -10,6 +10,8 @@ const { CreateCaseTool } = require("./lib/createCase");
 const { getOrderSummaryStatus } = require("./lib/apexService");
 const { UpdateDeliveryDateTool } = require("./lib/updateDeliveyDate");
 const { getSystemPrompt } = require("./prompts");
+const { handleVoiceInput } = require("./intents/orderIntent");
+const ngrok = require("@ngrok/ngrok");
 
 dotenv.config();
 
@@ -208,35 +210,7 @@ app.post("/respond", async (req, res) => {
 
   const voiceResponse = new twiml.VoiceResponse();
   try {
-    let assistantResponse = "I'm sorry, I couldn't process your request.";
-
-    if (voiceInput.includes("order") || voiceInput.includes("product")) {
-      if (orderDetailsArray.length === 0) {
-        assistantResponse = "I don't have any order details for you at the moment.";
-      } else if (voiceInput.includes("recent")) {
-        const recentOrder = orderDetailsArray[orderDetailsArray.length - 1];
-        assistantResponse = `Your most recent order is: ${recentOrder.product}, Quantity: ${recentOrder.quantity}, Status: ${recentOrder.status}, Ordered on: ${recentOrder.orderDate}.`;
-      } else if (voiceInput.includes("status")) {
-        let statusResponse = "Your order statuses:\n";
-        orderDetailsArray.forEach((order) => {
-          statusResponse += `Order ${order.orderNumber} - Status: ${order.status}\n`;
-        });
-        assistantResponse = statusResponse;
-      } else {
-        let productList = "Here are the products you ordered:\n";
-        orderDetailsArray.forEach((order) => {
-          productList += `- ${order.product}\n`;
-        });
-        assistantResponse = productList;
-      }
-    } else {
-      messages.push({
-        role: "system",
-        content: `Order details available: ${JSON.stringify(orderDetailsArray)}`,
-      });
-      const result = await agent.invoke({ messages });
-      assistantResponse = result.messages[result.messages.length - 1].content;
-    }
+    const assistantResponse = await handleVoiceInput(voiceInput, orderDetailsArray, agent, messages);
 
     messages.push({ role: "assistant", content: assistantResponse });
     if (messages.length > 10) messages = messages.slice(-10);
@@ -246,13 +220,13 @@ app.post("/respond", async (req, res) => {
     voiceResponse.say({ voice: "Polly.Joanna", language: "en-US" }, assistantResponse);
   } catch (error) {
     console.error("🔍 POST /respond: Error processing request:", error.stack);
-    assistantResponse = "Sorry, I’m having trouble processing your request. Please try again.";
+    const assistantResponse = "Sorry, I’m having trouble processing your request. Please try again.";
     voiceResponse.say({ voice: "Polly.Joanna", language: "en-US" }, assistantResponse);
   }
 
   voiceResponse.gather({
     input: ["speech"],
-    speechTimeout: "auto", 
+    speechTimeout: "auto",
     speechModel: "phone_call",
     enhanced: true,
     action: "/respond",
@@ -263,8 +237,26 @@ app.post("/respond", async (req, res) => {
   res.type("text/xml");
   res.send(voiceResponse.toString());
 });
-  const port = process.env.PORT || 3000;
-  
-  app.listen(port, async () => {
-    console.log(`🔍 Server is running on: http://localhost:${port}`);
-  });
+
+
+
+const port = process.env.PORT || 3000;
+
+app.listen(port, async () => {
+  console.log(`🔍 Server is running on: http://localhost:${port}`);
+
+  if (process.env.NGROK_AUTH_TOKEN) {
+    const NGROK_AUTH_TOKEN = process.env.NGROK_AUTH_TOKEN;
+    try {
+      const listener = await ngrok.forward({
+        addr: port,
+        authtoken: NGROK_AUTH_TOKEN,
+      });
+      console.log(`🔍 Ngrok tunnel established at: ${listener.url()}`);
+    } catch (err) {
+      console.error("🔍 Error establishing ngrok tunnel:", err);
+    }
+  } else {
+    console.log("🔍 Ngrok is not enabled. Set NGROK_AUTH_TOKEN in .env to enable it.");
+  }
+});
